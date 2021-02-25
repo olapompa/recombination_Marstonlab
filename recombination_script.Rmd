@@ -1,0 +1,124 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+require("knitr")
+opts_knit$set(root.dir = "C:/Users/s1584495/Desktop/R mess/vasso/git/recombination_Marstonlab")
+```
+
+
+```{r}
+
+if(!require(tidyverse)){
+    install.packages("tidyverse")
+    library(tidyverse)
+}
+
+
+```
+
+
+
+This code here was in 90% written by Wera. I did brush it a bit as it didn't want to work for Vasso. And while it is writen in base R, I guess the code is stable so I don't need to change anything here. The equations for this part come from [Stahl's lab](https://elizabethhousworth.com/StahlLabOnlineTools/EquationsMapDistance.html) 
+```{r}
+data<-read.csv("nadine.csv")
+str(data) #checks the type of data. strain should be factor, genotypes either numeric or integrer
+data$strain <-as.factor(data$strain) #changes the strain to factor, so the script doesn't mistake it as a number of a certain genotype in next line of code
+data$n<-rowSums(data[,-1]) #sums every row except for the header.You run this line only once, if you run it again the results will be wrong. (for unknow reason Wera's version didn't work previously but it works for me now?) 
+
+data$fP<- data$P/data$n #next 3 lines give you a fraction of a given phenotype
+data$fT<- data$T/data$n
+data$fN<- data$N/data$n
+data$VARfT<-data$fT * (1-data$fT) / data$n #statistics start here
+data$VARfN<-data$fN * (1-data$fN) / data$n
+data$COVfTfN<- -data$fT * data$fN / data$n
+data$Morgans <- data$fT/2 + 3 * data$fN
+data$varX <- 0.25 * data$VARfT + 9 * data$VARfN + 3 * data$COVfTfN
+data$SE <- sqrt(data$varX)
+write.csv(data, "nadine_outcome.csv") 
+
+data
+```
+
+There are other equations on the Stahl's lab webpage. 
+There is a talk about chi-square, however it is calculated when you put details only for one tetrad. I am making an educated guess that it is "is there interference for C.O." 
+
+```{r}
+
+```
+
+
+Trying stats, Fisher's exact. Pair-wise Fisher is what Nadine used in the paper. There is a talk about chi-square in the Stahl's lab webpage, however it is calculated when you put details only for one tetrad. I am making an educated guess that it is "is there interference for C.O." 
+
+```{r}
+#think of this as an ANOVA (though it is Fisher's)--it only will give p.value if there is something that differs but doesn't say where. Takes a lot of memory, so p.value is simulated by Monte Carlo
+
+data.for.stat <- data %>% 
+  select(strain, P,T, N) %>% 
+  mutate(nonrec=P) %>% 
+  mutate(rec=N+T) %>% 
+  select(strain, nonrec, rec) %>% 
+  remove_rownames %>% 
+  column_to_rownames(var="strain") 
+
+str(data.for.stat)
+
+set.seed(2021)
+fisher.test(data.for.stat, simulate.p.value = T)
+
+#now, we do sort of post-hoc to see what is different. For this, we will use pairwise fisher. If you want to pair everything with everything use this line of code
+if(!require(rcompanion)){
+  install.packages("rcompanion")
+  library(rcompanion)}
+
+pairwiseNominalIndependence(as.matrix(data.for.stat), fisher = T, chisq = F, gtest = F, digits=4, method = "fdr")
+
+#of course the line above gives bullshit for p.adj if you want to just know the difference to WT (if different sample, then filter accordingly). In this case we will ignore the first calculated value, filter the interesting comparisons and apply the correction then.
+
+p.values <- pairwiseNominalIndependence(as.matrix(data.for.stat), fisher = T, chisq = F, gtest = F, digits=4) %>% 
+  filter( grepl("WT :", Comparison)) %>%
+  select(-p.adj.Fisher) %>% 
+  mutate(Comparison= as.factor(Comparison)) 
+
+#this bastard refuses to work inside a pipe, so
+p.values$FDR =
+      p.adjust(p.values$p.Fisher,
+               method = "fdr")
+
+p.values
+```
+Power analysis! I have trouble making it pairwise so far. I want to write a function but it gives me troubles
+```{r}
+if(!require(pwr)){
+  install.packages("pwr")
+  library(pwr)}
+
+
+f.data.for.stat <- data.for.stat %>% 
+mutate(row=row_number()) %>% 
+filter(row %in% c("1","7"))  
+
+total <- f.data.for.stat %>% 
+select_if(is.numeric) %>%
+      map_df(sum) %>% 
+      pmap(sum)
+
+f.data.for.stat <- f.data.for.stat %>% 
+  mutate(f.nonrec = nonrec / unlist(total)) %>% 
+  mutate(f.rec = rec / unlist(total)) %>% 
+  select(f.nonrec, f.rec)
+          
+
+effect.size <- ES.w2(f.data.for.stat)
+degfreedom <- (nrow(f.data.for.stat)-1)*(ncol(f.data.for.stat)-1)
+
+pwr.chisq.test(w = effect.size, N = unlist(total), df = degfreedom, sig.level = 0.05)
+
+
+
+pwr.chisq.test(power = 0.95, df = degfreedom, sig.level = 0.05, N=11701)
+
+```
+
